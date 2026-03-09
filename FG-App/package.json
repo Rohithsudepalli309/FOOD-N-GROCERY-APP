@@ -1,0 +1,32 @@
+{
+  "name": "fg-monorepo",
+  "version": "1.0.0",
+  "private": true,
+  "description": "F&G Food & Groceries — Production Monorepo",
+  "workspaces": [
+    "apps/*",
+    "services/*",
+    "shared"
+  ],
+  "scripts": {
+    "dev": "turbo run dev",
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "lint": "turbo run lint",
+    "start:all": "turbo run start --parallel",
+    "start:server": "npm run start --workspace=services/realtime-service",
+    "start:gateway": "npm run start --workspace=services/api-gateway",
+    "start:mobile": "npm run start --workspace=apps/mobile",
+    "start:web": "npm run dev --workspace=apps/web-admin",
+    "start:delivery": "npm run start --workspace=apps/delivery-app",
+    "docker:up": "docker-compose -f infrastructure/docker/docker-compose.yml up -d",
+    "docker:down": "docker-compose -f infrastructure/docker/docker-compose.yml down"
+  },
+  "devDependencies": {
+    "turbo": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "npm": ">=9.0.0"
+  }
+}

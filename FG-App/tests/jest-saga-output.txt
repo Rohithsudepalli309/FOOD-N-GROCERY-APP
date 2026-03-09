@@ -1,0 +1,41 @@
+FAIL ./order-saga.test.js
+  Surge Pricing Algorithm
+    ΓêÜ should return baseline 1.0x multiplier outside peak hours (3am) (3 ms)
+    ΓêÜ should apply 1.2x during lunch rush (12-14)
+    ΓêÜ should apply 1.3x during dinner rush (19-21) (1 ms)
+    ΓêÜ should spike to 1.5x when supply (riders) is critically low
+    ΓêÜ should add both time and supply bonuses during peak shortage
+    ├ù should cap the surge multiplier at 2.5x (3 ms)
+  Order State Machine ΓÇö canTransition()
+    ΓêÜ should allow pending ΓåÆ accepted
+    ΓêÜ should allow pending ΓåÆ cancelled_auto (Saga compensation)
+    ΓêÜ should allow accepted ΓåÆ cancelled_auto (restaurant rejected) (1 ms)
+    ΓêÜ should NOT allow delivered ΓåÆ any state (1 ms)
+    ΓêÜ should NOT allow backwards transition (accepted ΓåÆ pending)
+    ΓêÜ should NOT allow skipping states (pending ΓåÆ delivered)
+    ΓêÜ should allow the full happy-path lifecycle (1 ms)
+  Auto-Cancel Timer
+    ΓêÜ should resolve after 90ms (simulating 90s) (9 ms)
+
+  ΓùÅ Surge Pricing Algorithm ΓÇ║ should cap the surge multiplier at 2.5x
+
+    expect(received).toBe(expected) // Object.is equality
+
+    Expected: 2.5
+    Received: 1.8
+
+      60 |
+      61 |   it('should cap the surge multiplier at 2.5x', () => {
+    > 62 |     expect(calculateSurge({ hour: 20, activeOrders: 100, onlineRiders: 1 })).toBe(2.5);
+         |                                                                              ^
+      63 |   });
+      64 | });
+      65 |
+
+      at Object.toBe (order-saga.test.js:62:78)
+
+Test Suites: 1 failed, 1 total
+Tests:       1 failed, 13 passed, 14 total
+Snapshots:   0 total
+Time:        1.704 s, estimated 2 s
+Ran all test suites matching /order-saga/i.

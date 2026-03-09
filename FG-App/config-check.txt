@@ -1,0 +1,337 @@
+time="2026-03-09T20:58:29+05:30" level=warning msg="The \"RAZORPAY_KEY_ID\" variable is not set. Defaulting to a blank string."
+time="2026-03-09T20:58:29+05:30" level=warning msg="The \"RAZORPAY_KEY_SECRET\" variable is not set. Defaulting to a blank string."
+time="2026-03-09T20:58:29+05:30" level=warning msg="The \"FCM_SERVER_KEY\" variable is not set. Defaulting to a blank string."
+time="2026-03-09T20:58:29+05:30" level=warning msg="D:\\MOBILE APPLICATION  DEV\\FOOD N GROCERY APP\\FG-App\\infrastructure\\docker\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+name: docker
+services:
+  analytics-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: analytics-service
+    depends_on:
+      kafka:
+        condition: service_started
+        required: true
+      postgres:
+        condition: service_started
+        required: true
+    environment:
+      DATABASE_URL: postgresql://fg_user:fg_pass@postgres:5432/fg_db
+      KAFKA_BROKERS: kafka:9092
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3009
+        published: "3009"
+        protocol: tcp
+    restart: unless-stopped
+  api-gateway:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: api-gateway
+    depends_on:
+      analytics-service:
+        condition: service_started
+        required: true
+      auth-service:
+        condition: service_started
+        required: true
+      delivery-service:
+        condition: service_started
+        required: true
+      notification-service:
+        condition: service_started
+        required: true
+      order-service:
+        condition: service_started
+        required: true
+      payment-service:
+        condition: service_started
+        required: true
+      realtime-service:
+        condition: service_started
+        required: true
+      search-service:
+        condition: service_started
+        required: true
+    environment:
+      JWT_SECRET: fg_jwt_secret_dev
+      NODE_ENV: development
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3000
+        published: "3000"
+        protocol: tcp
+    restart: unless-stopped
+  auth-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: auth-service
+    environment:
+      JWT_SECRET: fg_jwt_secret_dev
+      NODE_ENV: development
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3001
+        published: "3001"
+        protocol: tcp
+    restart: unless-stopped
+  delivery-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: delivery-service
+    depends_on:
+      redis:
+        condition: service_started
+        required: true
+    environment:
+      REDIS_URL: redis://redis:6379
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3004
+        published: "3004"
+        protocol: tcp
+    restart: unless-stopped
+  kafka:
+    depends_on:
+      zookeeper:
+        condition: service_started
+        required: true
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+      KAFKA_BROKER_ID: "1"
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+    image: confluentinc/cp-kafka:7.4.0
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 9092
+        published: "9092"
+        protocol: tcp
+    restart: unless-stopped
+  notification-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: notification-service
+    environment:
+      FCM_SERVER_KEY: ""
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3006
+        published: "3006"
+        protocol: tcp
+    restart: unless-stopped
+  order-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: order-service
+    depends_on:
+      kafka:
+        condition: service_started
+        required: true
+      postgres:
+        condition: service_started
+        required: true
+    environment:
+      DATABASE_URL: postgresql://fg_user:fg_pass@postgres:5432/fg_db
+      KAFKA_BROKERS: kafka:9092
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3003
+        published: "3003"
+        protocol: tcp
+    restart: unless-stopped
+  payment-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: payment-service
+    environment:
+      RAZORPAY_KEY_ID: ""
+      RAZORPAY_KEY_SECRET: ""
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3005
+        published: "3005"
+        protocol: tcp
+    restart: unless-stopped
+  postgres:
+    environment:
+      POSTGRES_DB: fg_db
+      POSTGRES_PASSWORD: fg_pass
+      POSTGRES_USER: fg_user
+    image: postgis/postgis:15-3.3
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 5432
+        published: "5432"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: postgres_data
+        target: /var/lib/postgresql/data
+        volume: {}
+      - type: bind
+        source: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker\init.sql
+        target: /docker-entrypoint-initdb.d/init.sql
+        bind: {}
+  realtime-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: realtime-service
+    depends_on:
+      kafka:
+        condition: service_started
+        required: true
+      redis:
+        condition: service_started
+        required: true
+    environment:
+      KAFKA_BROKERS: kafka:9092
+      REDIS_URL: redis://redis:6379
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3007
+        published: "3007"
+        protocol: tcp
+    restart: unless-stopped
+  redis:
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+    image: redis:7-alpine
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 6379
+        published: "6379"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: volume
+        source: redis_data
+        target: /data
+        volume: {}
+  redis-commander:
+    depends_on:
+      redis:
+        condition: service_started
+        required: true
+    environment:
+      REDIS_HOSTS: local:redis:6379
+    image: rediscommander/redis-commander:latest
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 8081
+        published: "8081"
+        protocol: tcp
+  restaurant-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: restaurant-service
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3002
+        published: "3002"
+        protocol: tcp
+    restart: unless-stopped
+  search-service:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\docker
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE: search-service
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 3008
+        published: "3008"
+        protocol: tcp
+    restart: unless-stopped
+  web-admin:
+    build:
+      context: D:\MOBILE APPLICATION  DEV\FOOD N GROCERY APP\FG-App\infrastructure\apps\web-admin
+      dockerfile: Dockerfile
+    depends_on:
+      api-gateway:
+        condition: service_started
+        required: true
+      realtime-service:
+        condition: service_started
+        required: true
+    environment:
+      NEXT_PUBLIC_API_URL: http://api-gateway:3000
+      NEXT_PUBLIC_WS_URL: ws://realtime-service:3007
+    networks:
+      default: null
+    ports:
+      - mode: ingress
+        target: 4000
+        published: "4000"
+        protocol: tcp
+    restart: unless-stopped
+  zookeeper:
+    environment:
+      ZOOKEEPER_CLIENT_PORT: "2181"
+      ZOOKEEPER_TICK_TIME: "2000"
+    image: confluentinc/cp-zookeeper:7.4.0
+    networks:
+      default: null
+    restart: unless-stopped
+networks:
+  default:
+    name: docker_default
+volumes:
+  postgres_data:
+    name: docker_postgres_data
+  redis_data:
+    name: docker_redis_data

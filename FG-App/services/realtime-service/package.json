@@ -1,0 +1,14 @@
+{
+  "name": "@fg/realtime-service",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5", "socket.io": "^4.7.5", "@socket.io/redis-adapter": "^8.3.0", "ioredis": "^5.4.1"
+  }
+}
