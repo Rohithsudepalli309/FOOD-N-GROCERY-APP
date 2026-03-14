@@ -4,8 +4,8 @@ services:
   # ── API Gateway ─────────────────────────────────────────────────────────
   api-gateway:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: api-gateway
     ports: ["3000:3000"]
@@ -18,8 +18,8 @@ services:
   # ── Microservices ──────────────────────────────────────────────────────
   auth-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: auth-service
     ports:
@@ -31,8 +31,8 @@ services:
 
   restaurant-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: restaurant-service
     ports:
@@ -41,8 +41,8 @@ services:
 
   order-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: order-service
     ports:
@@ -55,8 +55,8 @@ services:
 
   delivery-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: delivery-service
     ports:
@@ -69,8 +69,8 @@ services:
 
   payment-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: payment-service
     ports:
@@ -82,8 +82,8 @@ services:
 
   notification-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: notification-service
     ports:
@@ -94,8 +94,8 @@ services:
 
   realtime-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: realtime-service
     ports:
@@ -110,8 +110,8 @@ services:
 
   search-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: search-service
     ports:
@@ -120,8 +120,8 @@ services:
 
   analytics-service:
     build:
-      context: .
-      dockerfile: Dockerfile.service
+      context: ../..
+      dockerfile: infrastructure/docker/Dockerfile.service
       args:
         SERVICE: analytics-service
     ports:
@@ -135,7 +135,7 @@ services:
   # ── Web Admin Dashboard ────────────────────────────────────────────────
   web-admin:
     build:
-      context: ../apps/web-admin
+      context: ../.../apps/web-admin
       dockerfile: Dockerfile
     ports: ["4000:4000"]
     environment: [NEXT_PUBLIC_API_URL=http://api-gateway:3000, NEXT_PUBLIC_WS_URL=ws://realtime-service:3007]

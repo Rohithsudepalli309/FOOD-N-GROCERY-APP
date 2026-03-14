@@ -1,0 +1,80 @@
+time="2026-03-10T10:30:42+05:30" level=warning msg="The \"FCM_SERVER_KEY\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:30:42+05:30" level=warning msg="The \"RAZORPAY_KEY_ID\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:30:42+05:30" level=warning msg="The \"RAZORPAY_KEY_SECRET\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:30:42+05:30" level=warning msg="D:\\MOBILE APPLICATION  DEV\\FOOD N GROCERY APP\\FG-App\\infrastructure\\docker\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Image docker-restaurant-service Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 730B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.service
+#2 transferring dockerfile: 739B 0.0s done
+#2 DONE 0.0s
+
+#3 [internal] load metadata for docker.io/library/node:18-alpine
+#3 DONE 1.2s
+
+#4 [internal] load .dockerignore
+#4 transferring context: 2B done
+#4 DONE 0.0s
+
+#5 [base 1/2] FROM docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e
+#5 resolve docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e 0.0s done
+#5 DONE 0.0s
+
+#6 [base 2/2] WORKDIR /app
+#6 CACHED
+
+#7 [runner 3/6] RUN addgroup --system --gid 1001 nodejs     && adduser --system --uid 1001 nodeuser
+#7 CACHED
+
+#8 [internal] load build context
+#8 transferring context: 106B done
+#8 DONE 0.0s
+
+#9 [deps 1/2] COPY . .
+#9 CACHED
+
+#10 [deps 2/2] RUN npm install --omit=dev --legacy-peer-deps
+#10 0.746 npm error code ENOENT
+#10 0.746 npm error syscall open
+#10 0.746 npm error path /app/package.json
+#10 0.747 npm error errno -2
+#10 0.747 npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/app/package.json'
+#10 0.747 npm error enoent This is related to npm not being able to find a file.
+#10 0.747 npm error enoent
+#10 0.749 npm error A complete log of this run can be found in: /root/.npm/_logs/2026-03-10T05_00_44_731Z-debug-0.log
+#10 ERROR: process "/bin/sh -c npm install --omit=dev --legacy-peer-deps" did not complete successfully: exit code: 254
+------
+ > [deps 2/2] RUN npm install --omit=dev --legacy-peer-deps:
+0.746 npm error code ENOENT
+0.746 npm error syscall open
+0.746 npm error path /app/package.json
+0.747 npm error errno -2
+0.747 npm error enoent Could not read package.json: Error: ENOENT: no such file or directory, open '/app/package.json'
+0.747 npm error enoent This is related to npm not being able to find a file.
+0.747 npm error enoent
+0.749 npm error A complete log of this run can be found in: /root/.npm/_logs/2026-03-10T05_00_44_731Z-debug-0.log
+------
+Dockerfile.service:7
+
+--------------------
+
+   5 |     FROM base AS deps
+
+   6 |     COPY . .
+
+   7 | >>> RUN npm install --omit=dev --legacy-peer-deps
+
+   8 |     
+
+   9 |     # Build stage
+
+--------------------
+
+failed to solve: process "/bin/sh -c npm install --omit=dev --legacy-peer-deps" did not complete successfully: exit code: 254
+
+
+
+View build details: docker-desktop://dashboard/build/default/default/y74tvnfq9x4sgk10qzw0mn304
+

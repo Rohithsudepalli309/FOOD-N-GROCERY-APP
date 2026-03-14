@@ -3,16 +3,14 @@ WORKDIR /app
 
 # Install dependencies only when needed
 FROM base AS deps
-COPY package*.json ./
-RUN npm ci --only=production --legacy-peer-deps
+COPY . .
+RUN npm install --omit=dev --legacy-peer-deps
 
 # Build stage
 FROM base AS builder
-COPY --from=deps /app/node_modules ./node_modules
-COPY . .
+COPY --from=deps /app /app
 
-ARG SERVICE
-ENV SERVICE=$SERVICE
+
 
 # Production stage
 FROM node:18-alpine AS runner
@@ -20,6 +18,8 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
+ARG SERVICE
+ENV SERVICE=$SERVICE
 
 # Don't run as root
 RUN addgroup --system --gid 1001 nodejs \

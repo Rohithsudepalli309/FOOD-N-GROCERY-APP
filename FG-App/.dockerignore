@@ -1,0 +1,16 @@
+node_modules
+apps/mobile/node_modules
+apps/delivery-app/node_modules
+apps/web-admin/node_modules
+services/*/node_modules
+shared/node_modules
+tests/node_modules
+.git
+.github
+.vscode
+.gemini
+infrastructure/terraform
+tests/
+*.log
+docker-compose.yml
+Dockerfile.service

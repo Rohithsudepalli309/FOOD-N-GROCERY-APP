@@ -1,0 +1,18 @@
+time="2026-03-10T10:35:40+05:30" level=warning msg="The \"FCM_SERVER_KEY\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:35:40+05:30" level=warning msg="The \"RAZORPAY_KEY_ID\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:35:40+05:30" level=warning msg="The \"RAZORPAY_KEY_SECRET\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:35:40+05:30" level=warning msg="D:\\MOBILE APPLICATION  DEV\\FOOD N GROCERY APP\\FG-App\\infrastructure\\docker\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Image docker-restaurant-service Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 682B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.service
+#2 transferring dockerfile: 2B done
+#2 DONE 0.0s
+failed to solve: failed to read dockerfile: open Dockerfile.service: no such file or directory
+
+
+
+View build details: docker-desktop://dashboard/build/default/default/32zooto4mqwiw56ph0y5msl8x
+

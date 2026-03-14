@@ -1,0 +1,59 @@
+time="2026-03-10T10:36:41+05:30" level=warning msg="The \"FCM_SERVER_KEY\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:36:41+05:30" level=warning msg="The \"RAZORPAY_KEY_ID\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:36:41+05:30" level=warning msg="The \"RAZORPAY_KEY_SECRET\" variable is not set. Defaulting to a blank string."
+time="2026-03-10T10:36:41+05:30" level=warning msg="D:\\MOBILE APPLICATION  DEV\\FOOD N GROCERY APP\\FG-App\\infrastructure\\docker\\docker-compose.yml: the attribute `version` is obsolete, it will be ignored, please remove it to avoid potential confusion"
+ Image docker-restaurant-service Building 
+#1 [internal] load local bake definitions
+#1 reading from stdin 706B done
+#1 DONE 0.0s
+
+#2 [internal] load build definition from Dockerfile.service
+#2 transferring dockerfile: 739B done
+#2 DONE 0.0s
+
+#3 [auth] library/node:pull token for registry-1.docker.io
+#3 DONE 0.0s
+
+#4 [internal] load metadata for docker.io/library/node:18-alpine
+#4 DONE 8.1s
+
+#5 [internal] load .dockerignore
+#5 transferring context: 2B done
+#5 DONE 0.0s
+
+#6 [base 1/2] FROM docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e
+#6 resolve docker.io/library/node:18-alpine@sha256:8d6421d663b4c28fd3ebc498332f249011d118945588d0a35cb9bc4b8ca09d9e 0.0s done
+#6 DONE 0.0s
+
+#7 [runner 3/6] RUN addgroup --system --gid 1001 nodejs     && adduser --system --uid 1001 nodeuser
+#7 CACHED
+
+#8 [base 2/2] WORKDIR /app
+#8 CACHED
+
+#9 [internal] load build context
+#9 transferring context: 3.99MB 5.0s
+#9 transferring context: 7.26MB 10.0s
+#9 transferring context: 9.02MB 15.1s
+#9 transferring context: 40.87MB 20.1s
+#9 transferring context: 69.61MB 25.1s
+#9 transferring context: 75.37MB 30.2s
+#9 transferring context: 77.66MB 35.2s
+#9 transferring context: 80.30MB 40.2s
+#9 transferring context: 89.66MB 45.3s
+#9 transferring context: 96.74MB 50.4s
+#9 transferring context: 103.49MB 55.4s
+#9 transferring context: 107.48MB 60.4s
+#9 transferring context: 113.02MB 65.6s
+#9 transferring context: 120.77MB 70.6s
+#9 transferring context: 130.56MB 75.7s
+#9 transferring context: 186.86MB 80.8s
+#9 transferring context: 275.32MB 85.9s
+#9 transferring context: 293.59MB 90.9s
+#9 transferring context: 296.73MB 96.0s
+#9 transferring context: 298.68MB 101.1s
+#9 transferring context: 307.52MB 106.2s
+#9 transferring context: 314.13MB 111.3s
+#9 transferring context: 326.23MB 116.3s
+#9 transferring context: 330.08MB 121.4s
+#9 transferring context: 332.19MB 126.5s
