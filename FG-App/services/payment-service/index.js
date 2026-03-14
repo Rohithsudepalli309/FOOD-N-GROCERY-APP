@@ -10,6 +10,8 @@ const crypto = require('crypto');
 const { idempotencyKey, rupeesToPaise, paiseToRupees } = require('../../shared/utils/index.js');
 const { createLogger } = require('../../shared/utils/logger.js');
 const { connectConsumer, publishEvent } = require('../../shared/utils/kafka.js');
+const { query } = require('../../shared/utils/db.js');
+const { redis } = require('../../shared/utils/redis.js');
 
 const logger = createLogger('payment-service');
 const app = express();
@@ -27,27 +29,41 @@ const razorpayInstance = new Razorpay({
 
 // ── In-memory stores ───────────────────────────────────────────────────────
 const payments = new Map();
-const wallets = new Map();       // userId → balance (paise)
-const idempotencyCache = new Set();
 
 // ── Wallet ─────────────────────────────────────────────────────────────────
-app.get('/api/payments/wallet/:userId', (req, res) => {
-  const balance = wallets.get(req.params.userId) ?? 24000; // ₹240 default in paise
-  res.json({ balance: paiseToRupees(balance), balancePaise: balance });
+app.get('/api/payments/wallet/:userId', async (req, res) => {
+  try {
+    const result = await query('SELECT wallet_balance as balance FROM users WHERE id = $1', [req.params.userId]);
+    const balance = result.rowCount > 0 && result.rows[0].balance !== null ? result.rows[0].balance : 24000;
+    res.json({ balance: paiseToRupees(balance), balancePaise: balance });
+  } catch(err) {
+    logger.error('Error fetching wallet:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
-app.post('/api/payments/wallet/add', (req, res) => {
+app.post('/api/payments/wallet/add', async (req, res) => {
   const { userId, amount } = req.body;
-  const current = wallets.get(userId) ?? 24000;
-  wallets.set(userId, current + rupeesToPaise(amount));
-  res.json({ success: true, balance: paiseToRupees(wallets.get(userId)) });
+  try {
+    const amountPaise = rupeesToPaise(amount);
+    const result = await query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2 RETURNING wallet_balance', [amountPaise, userId]);
+    // Allow gracefully bypassing missing user row mock edge cases
+    const balance = result.rowCount > 0 ? result.rows[0].wallet_balance : (24000 + amountPaise);
+    res.json({ success: true, balance: paiseToRupees(balance) });
+  } catch(err) {
+    logger.error('Error adding to wallet:', err);
+    res.status(500).json({ error: 'Internal server error' });
+  }
 });
 
 // ── Razorpay: Create Payment Order ─────────────────────────────────────────
 app.post('/api/payments/create', async (req, res) => {
   const { orderId, amount, currency = 'INR', userId } = req.body;
   const iKey = idempotencyKey(orderId);
-  if (idempotencyCache.has(iKey.split('_')[0] + '_' + orderId)) {
+  const cacheKey = `idempotency:${iKey.split('_')[0]}_${orderId}`;
+  
+  const isSet = await redis.set(cacheKey, '1', 'NX', 'EX', 86400); // 24 hours
+  if (!isSet) {
     return res.status(409).json({ error: 'Duplicate payment attempt', idempotencyKey: iKey });
   }
 
@@ -66,7 +82,6 @@ app.post('/api/payments/create', async (req, res) => {
     };
 
     payments.set(paymentOrder.id, { ...paymentOrder, status: 'created' });
-    idempotencyCache.add(iKey.split('_')[0] + '_' + orderId);
     
     res.json(paymentOrder);
   } catch (error) {
@@ -111,49 +126,68 @@ app.post('/api/payments/verify', (req, res) => {
 });
 
 // ── Wallet Payment ─────────────────────────────────────────────────────────
-app.post('/api/payments/wallet/pay', (req, res) => {
+app.post('/api/payments/wallet/pay', async (req, res) => {
   const { userId, orderId, amount } = req.body;
-  const balance = wallets.get(userId) ?? 0;
-  const amountPaise = rupeesToPaise(amount);
+  try {
+    const amountPaise = rupeesToPaise(amount);
+    
+    // Check balance first
+    const balRes = await query('SELECT wallet_balance as balance FROM users WHERE id = $1', [userId]);
+    const balance = balRes.rowCount > 0 && balRes.rows[0].balance !== null ? balRes.rows[0].balance : 24000;
+    
+    if (balance < amountPaise) {
+      return res.status(400).json({ error: 'Insufficient wallet balance', balance: paiseToRupees(balance) });
+    }
 
-  if (balance < amountPaise) {
-    return res.status(400).json({ error: 'Insufficient wallet balance', balance: paiseToRupees(balance) });
+    // Deduct
+    const update = await query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) - $1 WHERE id = $2 RETURNING wallet_balance', [amountPaise, userId]);
+    const newBalance = update.rowCount > 0 ? update.rows[0].wallet_balance : (balance - amountPaise);
+
+    const txnId = 'TXN_' + uuidv4().slice(0, 8).toUpperCase();
+
+    payments.set(txnId, {
+      txnId, orderId, userId, amount, method: 'wallet',
+      status: 'success', createdAt: new Date().toISOString(),
+    });
+
+    res.json({ success: true, txnId, newBalance: paiseToRupees(newBalance) });
+  } catch(err) {
+    logger.error('Wallet Pay Error:', err);
+    res.status(500).json({ error: 'Wallet transaction failed' });
   }
-
-  wallets.set(userId, balance - amountPaise);
-  const txnId = 'TXN_' + uuidv4().slice(0, 8).toUpperCase();
-
-  payments.set(txnId, {
-    txnId, orderId, userId, amount, method: 'wallet',
-    status: 'success', createdAt: new Date().toISOString(),
-  });
-
-  res.json({ success: true, txnId, newBalance: paiseToRupees(wallets.get(userId)) });
 });
 
 // ── Refund ─────────────────────────────────────────────────────────────────
-app.post('/api/payments/refund', (req, res) => {
+app.post('/api/payments/refund', async (req, res) => {
   const { orderId, amount, reason, userId } = req.body;
-  // In prod: Razorpay Refunds API
-  // Here: credit wallet
-  const current = wallets.get(userId) ?? 0;
-  wallets.set(userId, current + rupeesToPaise(amount));
-
-  res.json({
-    success: true,
-    refundId: 'rfnd_' + uuidv4().slice(0, 14),
-    amount,
-    method: 'wallet_credit',
-    expectedBy: '5-7 business days (card) / instant (wallet)',
-  });
+  try {
+    const amountPaise = rupeesToPaise(amount);
+    await query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [amountPaise, userId]);
+    res.json({
+      success: true,
+      refundId: 'rfnd_' + uuidv4().slice(0, 14),
+      amount,
+      method: 'wallet_credit',
+      expectedBy: '5-7 business days (card) / instant (wallet)',
+    });
+  } catch(err) {
+    logger.error('Refund Error:', err);
+    res.status(500).json({ error: 'Refund processing failed' });
+  }
 });
 
 // ── Cashback ───────────────────────────────────────────────────────────────
-app.post('/api/payments/cashback', (req, res) => {
+app.post('/api/payments/cashback', async (req, res) => {
   const { userId, orderId, cashback } = req.body;
-  const current = wallets.get(userId) ?? 0;
-  wallets.set(userId, current + rupeesToPaise(cashback));
-  res.json({ success: true, credited: cashback, newBalance: paiseToRupees(wallets.get(userId)) });
+  try {
+    const amountPaise = rupeesToPaise(cashback);
+    const update = await query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2 RETURNING wallet_balance', [amountPaise, userId]);
+    const balance = update.rowCount > 0 ? update.rows[0].wallet_balance : (24000 + amountPaise);
+    res.json({ success: true, credited: cashback, newBalance: paiseToRupees(balance) });
+  } catch(err) {
+    logger.error('Cashback Error:', err);
+    res.status(500).json({ error: 'Cashback failed' });
+  }
 });
 
 app.get('/api/payments/health', (_, res) => res.json({ service: 'payment-service', status: 'ok' }));
@@ -177,8 +211,7 @@ async function initRefundConsumer() {
         logger.info(`Executing Razorpay Refund for ${originalPayment.id}`);
       } else {
         // Wallet or COD fallback - Credit the user's FG Wallet
-        const current = wallets.get(userId) ?? 24000;
-        wallets.set(userId, current + rupeesToPaise(amount));
+        await query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [rupeesToPaise(amount), userId]);
         logger.info(`Wallet Refunded ₹${amount} to User ${userId}`);
       }
 

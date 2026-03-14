@@ -17,6 +17,8 @@ CREATE TABLE users (
     phone VARCHAR(20) UNIQUE NOT NULL,
     name VARCHAR(100),
     role VARCHAR(20) DEFAULT 'customer', -- customer, rider, restaurant_admin
+    email VARCHAR(255),
+    wallet_balance INT DEFAULT 0,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
