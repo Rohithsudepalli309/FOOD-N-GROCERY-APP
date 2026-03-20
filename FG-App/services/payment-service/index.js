@@ -13,9 +13,25 @@ const { connectConsumer, publishEvent } = require('../../shared/utils/kafka.js')
 const { query } = require('../../shared/utils/db.js');
 const { redis } = require('../../shared/utils/redis.js');
 
+const rateLimit = require('express-rate-limit');
 const logger = createLogger('payment-service');
 const app = express();
-app.use(cors()); app.use(express.json());
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') || false }));
+app.use(express.json());
+
+// ── Rate Limiting (#14 CodeQL fix) ───────────────────────────────────────
+const createPaymentLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 10,
+  message: { error: 'Too many payment requests. Please wait.' },
+  standardHeaders: true, legacyHeaders: false,
+});
+const paymentLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 30,
+  message: { error: 'Too many requests.' },
+  standardHeaders: true, legacyHeaders: false,
+});
+app.use('/api/payments/create', createPaymentLimiter);
+app.use('/api/payments', paymentLimiter);
 
 const Razorpay = require('razorpay');
 
@@ -190,6 +206,58 @@ app.post('/api/payments/cashback', async (req, res) => {
   }
 });
 
+// ── Razorpay Webhook (Phase 17) ────────────────────────────────────────────────
+// Must use raw body to verify Razorpay HMAC-SHA256 signature
+app.post('/api/payments/webhook',
+  express.raw({ type: 'application/json' }),
+  async (req, res) => {
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET || 'webhook_secret_dev';
+    const signature = req.headers['x-razorpay-signature'];
+    const expectedSig = crypto
+      .createHmac('sha256', webhookSecret)
+      .update(req.body)
+      .digest('hex');
+
+    if (signature !== expectedSig) {
+      logger.warn('Razorpay webhook: invalid signature');
+      return res.status(400).json({ error: 'Invalid webhook signature' });
+    }
+
+    const event = JSON.parse(req.body.toString());
+    const { event: eventType, payload } = event;
+    logger.info('Razorpay webhook received', { eventType });
+
+    try {
+      if (eventType === 'payment.captured') {
+        const { order_id, id: paymentId } = payload.payment.entity;
+        // Mark order as confirmed via Kafka
+        await publishEvent('payment_confirmed', order_id, {
+          razorpayOrderId: order_id,
+          razorpayPaymentId: paymentId,
+          status: 'paid',
+        });
+        logger.info('Payment confirmed via webhook', { order_id, paymentId });
+      }
+
+      if (eventType === 'payment.failed') {
+        const { order_id, notes } = payload.payment.entity;
+        const userId = notes?.userId;
+        if (userId) {
+          const refundAmount = payload.payment.entity.amount;
+          await query('UPDATE users SET wallet_balance = COALESCE(wallet_balance, 0) + $1 WHERE id = $2', [refundAmount, userId]);
+          logger.info('Auto-credited wallet on payment.failed', { userId, refundAmount });
+        }
+        await publishEvent('payment_failed', order_id, { order_id, status: 'payment_failed' });
+      }
+    } catch (err) {
+      logger.error('Webhook processing failed', { error: err.message });
+    }
+
+    res.json({ received: true });
+  }
+);
+
+// ── Health ──────────────────────────────────────────────────────────────────
 app.get('/api/payments/health', (_, res) => res.json({ service: 'payment-service', status: 'ok' }));
 
 // ── Refund Consumer (Saga Compensation) ────────────────────────────────────

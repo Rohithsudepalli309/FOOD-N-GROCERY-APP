@@ -13,9 +13,27 @@ const { createLogger } = require('../../shared/utils/logger.js');
 const { query } = require('../../shared/utils/db.js');
 const { redis } = require('../../shared/utils/redis.js');
 
+const rateLimit = require('express-rate-limit');
 const logger = createLogger('auth-service');
 const app = express();
-app.use(cors()); app.use(express.json());
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') || false }));
+app.use(express.json());
+
+// ── Rate Limiting (#2–#13 CodeQL fixes) ───────────────────────────────────
+// Tight limit on OTP send to prevent SMS cost abuse
+const otpSendLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 5,
+  message: { error: 'Too many OTP requests. Try again in 10 minutes.' },
+  standardHeaders: true, legacyHeaders: false,
+});
+// General auth route limiter
+const authLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 30,
+  message: { error: 'Too many requests. Please slow down.' },
+  standardHeaders: true, legacyHeaders: false,
+});
+app.use('/api/auth/otp/send', otpSendLimiter);
+app.use('/api/auth', authLimiter);
 
 const TWILIO_SID = process.env.TWILIO_ACCOUNT_SID;
 const TWILIO_TOKEN = process.env.TWILIO_AUTH_TOKEN;
@@ -130,10 +148,23 @@ app.post('/api/auth/refresh', async (req, res) => {
   res.json(tokens);
 });
 
-// ── Logout ────────────────────────────────────────────────────────────────────
+// ── Logout (Phase 18: blacklist access token) ───────────────────────────────────
 app.post('/api/auth/logout', requireAuth, async (req, res) => {
   const { refreshToken } = req.body;
+  const accessToken = req.headers.authorization?.split(' ')[1];
+
+  // Revoke refresh token
   if (refreshToken) await redis.del(`session:${refreshToken}`);
+
+  // Blacklist access token for its remaining lifetime
+  if (accessToken) {
+    try {
+      const decoded = jwt.decode(accessToken);
+      const ttl = decoded?.exp ? decoded.exp - Math.floor(Date.now() / 1000) : 7 * 24 * 60 * 60;
+      if (ttl > 0) await redis.set(`blacklist:${accessToken}`, '1', 'EX', ttl);
+    } catch { /* token already invalid */ }
+  }
+
   res.json({ success: true });
 });
 
@@ -160,7 +191,7 @@ app.get('/api/auth/health', async (_, res) => {
   }
 });
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+// ── Helpers (Phase 18: JWT Blacklisting) ─────────────────────────────────────
 async function issueTokens(userId) {
   const accessToken = jwt.sign({ userId, role: 'customer' }, JWT_SECRET, { expiresIn: JWT_EXPIRES });
   const refreshToken = uuidv4();
@@ -168,11 +199,14 @@ async function issueTokens(userId) {
   return { accessToken, refreshToken, expiresIn: 7 * 24 * 60 * 60 };
 }
 
-function requireAuth(req, res, next) {
+async function requireAuth(req, res, next) {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Unauthorized' });
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
+    // Phase 18: Check JWT blacklist in Redis
+    const blacklisted = await redis.get(`blacklist:${token}`);
+    if (blacklisted) return res.status(401).json({ error: 'Token has been revoked. Please login again.' });
     req.userId = decoded.userId;
     next();
   } catch { res.status(401).json({ error: 'Invalid token' }); }

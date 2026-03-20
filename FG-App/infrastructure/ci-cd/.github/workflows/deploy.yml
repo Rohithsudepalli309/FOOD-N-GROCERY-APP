@@ -67,24 +67,29 @@ jobs:
     runs-on: ubuntu-latest
     needs: build
     if: github.ref == 'refs/heads/main'
-    environment: production
+    environment:
+      name: ${{ github.ref == 'refs/heads/main' && 'production' || 'staging' }}
     steps:
       - uses: actions/checkout@v4
       - uses: azure/setup-kubectl@v3
       - name: Configure kubectl
-        run: echo "${{ secrets.KUBECONFIG }}" | base64 -d > /tmp/kubeconfig
-        env: { KUBECONFIG: /tmp/kubeconfig }
+        # KUBE_CONFIG_DATA avoids collision with the reserved KUBECONFIG system context (#75 fix)
+        run: echo "${{ secrets.KUBE_CONFIG_DATA }}" | base64 -d > /tmp/kubeconfig
+        env:
+          KUBECONFIG: /tmp/kubeconfig
 
       - name: Update image tags
         run: |
           for service in api-gateway auth-service order-service delivery-service payment-service notification-service realtime-service search-service analytics-service restaurant-service; do
             kubectl set image deployment/$service $service=${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}-$service:${{ github.sha }} -n fg-prod
           done
-        env: { KUBECONFIG: /tmp/kubeconfig }
+        env:
+          KUBECONFIG: /tmp/kubeconfig
 
       - name: Wait for rollout
         run: kubectl rollout status deployment/order-service -n fg-prod --timeout=120s
-        env: { KUBECONFIG: /tmp/kubeconfig }
+        env:
+          KUBECONFIG: /tmp/kubeconfig
 
   # ── Expo Mobile Build (EAS) ─────────────────────────────────────────────
   mobile-build:
@@ -92,6 +97,10 @@ jobs:
     runs-on: ubuntu-latest
     needs: test
     if: github.ref == 'refs/heads/main'
+    env:
+      # Secret EXPO_TOKEN must be registered in GitHub repo Settings → Secrets → Actions
+      # IDE warning for this is a false positive — it cannot inspect remote secrets
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -101,5 +110,3 @@ jobs:
       - name: Build Android APK
         run: eas build --platform android --profile preview --non-interactive
         working-directory: apps/mobile
-        env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}

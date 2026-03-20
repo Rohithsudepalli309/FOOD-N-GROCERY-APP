@@ -26,8 +26,20 @@ const SERVICES = {
   '/api/analytics':    `http://localhost:3009`,
 };
 
-// ── Middleware ─────────────────────────────────────────────────────────────
-app.use(cors({ origin: '*' }));
+// ── CORS — explicit allowlist (#1 CodeQL fix) ─────────────────────────────
+const ALLOWED_ORIGINS = (
+  process.env.ALLOWED_ORIGINS ||
+  'http://localhost:3000,http://localhost:4000,http://localhost:19006,exp://localhost'
+).split(',').map(o => o.trim());
+
+app.use(cors({
+  origin: (origin, cb) => {
+    // Allow requests with no origin (mobile native, curl, server-to-server)
+    if (!origin || ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    cb(new Error(`CORS: origin '${origin}' is not allowed`));
+  },
+  credentials: true,
+}));
 app.use(express.json());
 
 // Rate limiting — 100 req / 15 min per IP

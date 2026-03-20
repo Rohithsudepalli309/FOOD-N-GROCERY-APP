@@ -7,9 +7,25 @@ const { RIDER_ASSIGNMENT, KAFKA_TOPICS } = require('../../shared/constants/index
 const { redis } = require('../../shared/utils/redis.js');
 const { createConsumer, publishEvent } = require('../../shared/utils/kafka.js');
 
+const rateLimit = require('express-rate-limit');
 const logger = createLogger('delivery-service');
 const app = express();
-app.use(cors()); app.use(express.json());
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') || false }));
+app.use(express.json());
+
+// ── Rate Limiting (#4, #6, #8, #9 CodeQL fixes) ─────────────────────────
+const locationLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 60, // 1 GPS ping/sec from rider app
+  message: { error: 'Location update rate exceeded.' },
+  standardHeaders: true, legacyHeaders: false,
+});
+const deliveryLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 30,
+  message: { error: 'Too many requests.' },
+  standardHeaders: true, legacyHeaders: false,
+});
+app.use('/api/delivery/riders/:id/location', locationLimiter);
+app.use('/api/delivery', deliveryLimiter);
 
 const REDIS_KEYS = {
   GEO: 'riders:geo',           // Stores rider lat/lng

@@ -1,90 +1,178 @@
 /**
- * Search Service — Fuse.js + Redis cache (Elasticsearch in production)
+ * Search Service — Elasticsearch 8.x + Redis cache + Kafka consumer
  * Port: 3008
+ * Fixes: CodeQL #15 (type confusion :57), #16 (type confusion :78)
  */
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const Fuse = require('fuse.js');
+const rateLimit = require('express-rate-limit');
+const { Client } = require('@elastic/elasticsearch');
 const { createLogger } = require('../../shared/utils/logger.js');
+const { redis } = require('../../shared/utils/redis.js');
+const { connectConsumer } = require('../../shared/utils/kafka.js');
 
 const logger = createLogger('search-service');
 const app = express();
-app.use(cors()); app.use(express.json());
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') || false }));
+app.use(express.json());
 
-// ── Data Corpus ────────────────────────────────────────────────────────────
-const CORPUS = [
-  // Restaurants
-  { id: 'r1', type: 'restaurant', name: 'Barbeque Nation', subtitle: 'North Indian, Barbeque', rating: 4.5, tags: ['bbq','grill','non-veg'], deliveryTime: '30-45 min', minOrder: 299 },
-  { id: 'r2', type: 'restaurant', name: 'Pizza Hut', subtitle: 'Pizza, Italian', rating: 4.2, tags: ['pizza','italian'], deliveryTime: '25-40 min', minOrder: 149 },
-  { id: 'r3', type: 'restaurant', name: "McDonald's", subtitle: 'Burger, Fast Food', rating: 4.4, tags: ['burger','mcchicken'], deliveryTime: '20-35 min', minOrder: 99 },
-  { id: 'r4', type: 'restaurant', name: "Domino's Pizza", subtitle: 'Pizza, Pasta', rating: 4.1, tags: ['pizza','pasta'], deliveryTime: '25-35 min', minOrder: 149 },
-  { id: 'r5', type: 'restaurant', name: 'Biryani Blues', subtitle: 'Biryani, Hyderabadi', rating: 4.6, tags: ['biryani','rice'], deliveryTime: '35-50 min', minOrder: 199 },
-  // Dishes
-  { id: 'd1', type: 'dish', name: 'Chicken Biryani', subtitle: 'Biryani Blues', price: 279, isVeg: false, tags: ['biryani','chicken','rice'] },
-  { id: 'd2', type: 'dish', name: 'Margherita Pizza', subtitle: 'Pizza Hut', price: 199, isVeg: true, tags: ['pizza','veg','cheese'] },
-  { id: 'd3', type: 'dish', name: 'McAloo Tikki Burger', subtitle: "McDonald's", price: 99, isVeg: true, tags: ['burger','veg','aloo'] },
-  { id: 'd4', type: 'dish', name: 'Paneer Butter Masala', subtitle: 'Barbeque Nation', price: 249, isVeg: true, tags: ['paneer','curry'] },
-  { id: 'd5', type: 'dish', name: 'Chocolate Lava Cake', subtitle: 'Pizza Hut', price: 129, isVeg: true, tags: ['dessert','chocolate'] },
-  { id: 'd6', type: 'dish', name: 'Chicken Tikka', subtitle: 'Barbeque Nation', price: 329, isVeg: false, tags: ['chicken','grill','starter'] },
-  // Grocery
-  { id: 'g1', type: 'product', name: 'Amul Butter 500g', subtitle: 'Dairy', price: 248, tags: ['butter','dairy','amul'] },
-  { id: 'g2', type: 'product', name: 'Tata Salt 1kg', subtitle: 'Essentials', price: 21, tags: ['salt','tata'] },
-  { id: 'g3', type: 'product', name: 'Aashirvaad Atta 5kg', subtitle: 'Staples', price: 248, tags: ['atta','wheat','flour'] },
-  { id: 'g4', type: 'product', name: 'Organic Tomatoes 1kg', subtitle: 'Vegetables', price: 29, tags: ['tomato','vegetable','organic'] },
-  { id: 'g5', type: 'product', name: 'Lay\'s Classic Chips', subtitle: 'Snacks', price: 20, tags: ['chips','snacks','lays'] },
-];
+// ── Rate Limiting ───────────────────────────────────────────────────────────
+const searchLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 60,
+  message: { error: 'Search rate limit exceeded. Please slow down.' },
+  standardHeaders: true, legacyHeaders: false,
+});
+app.use('/api/search', searchLimiter);
 
-const FUSE_OPTIONS = {
-  includeScore: true, threshold: 0.4,
-  keys: [
-    { name: 'name', weight: 3 },
-    { name: 'subtitle', weight: 1.5 },
-    { name: 'tags', weight: 1 },
-  ],
-};
+// ── Elasticsearch Client ────────────────────────────────────────────────────
+const ES_URL = process.env.ELASTICSEARCH_URL || 'http://localhost:9200';
+const esClient = new Client({ node: ES_URL });
 
-const fuse = new Fuse(CORPUS, FUSE_OPTIONS);
-const queryCache = new Map(); // in prod: Redis with 5-min TTL
-
+const INDICES = { RESTAURANTS: 'restaurants', MENU: 'menu_items', PRODUCTS: 'products' };
 const TRENDING = ['Biryani', 'Pizza', 'Burger', 'Paneer', 'Chocolate', 'Butter Chicken'];
+const CACHE_TTL = 300; // 5 min Redis cache
 
-// ── Endpoints ──────────────────────────────────────────────────────────────
+// ── Input Sanitizer (Fixes CodeQL #15, #16 — type confusion) ───────────────
+function sanitizeString(val, maxLen = 200) {
+  if (typeof val !== 'string') return '';
+  return val.replace(/[<>"'`;\\]/g, '').slice(0, maxLen).trim();
+}
 
-// GET /api/search?q=biryani&type=all&veg=false
-app.get('/api/search', (req, res) => {
-  const { q, type = 'all', veg, limit = 20, offset = 0 } = req.query;
-  if (!q || q.length < 2) return res.json({ results: [], trending: TRENDING });
+function sanitizePositiveInt(val, fallback, max = 100) {
+  const n = parseInt(val, 10);
+  if (isNaN(n) || n < 0) return fallback;
+  return Math.min(n, max);
+}
 
-  const cacheKey = `${q}:${type}:${veg}`;
-  if (queryCache.has(cacheKey)) return res.json({ results: queryCache.get(cacheKey), cached: true });
+// ── Elasticsearch Queries ───────────────────────────────────────────────────
+async function searchES(q, type, isVeg, limit, offset) {
+  const indices = type === 'restaurant' ? [INDICES.RESTAURANTS]
+    : type === 'dish' ? [INDICES.MENU]
+    : type === 'product' ? [INDICES.PRODUCTS]
+    : [INDICES.RESTAURANTS, INDICES.MENU, INDICES.PRODUCTS];
 
-  let results = fuse.search(q, { limit: parseInt(limit) + parseInt(offset) })
-    .map(r => ({ ...r.item, score: Math.round((1 - r.score) * 100) }));
+  const filters = [];
+  if (isVeg === 'true') filters.push({ term: { isVeg: true } });
 
-  if (type !== 'all') results = results.filter(r => r.type === type);
-  if (veg === 'true') results = results.filter(r => r.isVeg !== false);
+  const { hits } = await esClient.search({
+    index: indices,
+    from: offset,
+    size: limit,
+    query: {
+      bool: {
+        must: [{
+          multi_match: {
+            query: q,
+            fields: ['name^3', 'subtitle^1.5', 'tags^1', 'description'],
+            fuzziness: 'AUTO',
+            type: 'best_fields',
+          },
+        }],
+        filter: filters,
+      },
+    },
+  });
 
-  const paginated = results.slice(parseInt(offset), parseInt(offset) + parseInt(limit));
-  queryCache.set(cacheKey, paginated);
-  setTimeout(() => queryCache.delete(cacheKey), 5 * 60 * 1000);
+  return {
+    results: hits.hits.map(h => ({ id: h._id, ...h._source, score: Math.round(h._score * 10) })),
+    total: typeof hits.total === 'object' ? hits.total.value : hits.total,
+  };
+}
 
-  res.json({ results: paginated, total: results.length, query: q });
+// ── Endpoints ───────────────────────────────────────────────────────────────
+
+// GET /api/search?q=biryani&type=all&veg=false&limit=20&offset=0
+app.get('/api/search', async (req, res) => {
+  // ✅ Explicit type-safe sanitization (#15 fix)
+  const q    = sanitizeString(req.query.q);
+  const type = sanitizeString(req.query.type) || 'all';
+  const veg  = sanitizeString(req.query.veg);
+  const limit  = sanitizePositiveInt(req.query.limit, 20, 50);
+  const offset = sanitizePositiveInt(req.query.offset, 0, 500);
+
+  if (q.length < 2) return res.json({ results: [], trending: TRENDING });
+
+  const cacheKey = `search:${q}:${type}:${veg}:${limit}:${offset}`;
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) return res.json({ ...JSON.parse(cached), cached: true });
+
+    const { results, total } = await searchES(q, type, veg, limit, offset);
+    const payload = { results, total, query: q };
+    await redis.set(cacheKey, JSON.stringify(payload), 'EX', CACHE_TTL);
+    res.json(payload);
+  } catch (err) {
+    logger.error('Elasticsearch query failed', { error: err.message });
+    res.status(503).json({ error: 'Search temporarily unavailable', results: [], trending: TRENDING });
+  }
 });
 
 // GET /api/search/autocomplete?q=bir
-app.get('/api/search/autocomplete', (req, res) => {
-  const { q } = req.query;
-  if (!q || q.length < 2) return res.json({ suggestions: TRENDING.slice(0, 5) });
-  const suggestions = fuse.search(q, { limit: 5 }).map(r => r.item.name);
-  res.json({ suggestions });
+app.get('/api/search/autocomplete', async (req, res) => {
+  // ✅ Explicit type-safe sanitization (#16 fix)
+  const q = sanitizeString(req.query.q);
+  if (q.length < 2) return res.json({ suggestions: TRENDING.slice(0, 5) });
+
+  const cacheKey = `autocomplete:${q}`;
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) return res.json({ suggestions: JSON.parse(cached) });
+
+    const { hits } = await esClient.search({
+      index: [INDICES.RESTAURANTS, INDICES.MENU, INDICES.PRODUCTS],
+      size: 6,
+      _source: ['name'],
+      query: {
+        match_phrase_prefix: { name: { query: q, max_expansions: 10 } },
+      },
+    });
+
+    const suggestions = [...new Set(hits.hits.map(h => h._source.name))].slice(0, 5);
+    await redis.set(cacheKey, JSON.stringify(suggestions), 'EX', 60);
+    res.json({ suggestions });
+  } catch (err) {
+    logger.warn('Autocomplete ES error, falling back to trending', { error: err.message });
+    res.json({ suggestions: TRENDING.slice(0, 5) });
+  }
 });
 
 // GET /api/search/trending
 app.get('/api/search/trending', (_, res) => res.json({ trending: TRENDING }));
 
 // GET /api/search/health
-app.get('/api/search/health', (_, res) => res.json({ service: 'search-service', status: 'ok', corpusSize: CORPUS.length }));
+app.get('/api/search/health', async (_, res) => {
+  try {
+    const esHealth = await esClient.cluster.health();
+    res.json({ service: 'search-service', status: 'ok', elasticsearch: esHealth.status });
+  } catch (err) {
+    res.status(503).json({ service: 'search-service', status: 'error', elasticsearch: 'unreachable' });
+  }
+});
+
+// ── Kafka Consumer: Auto-index catalog changes ──────────────────────────────
+async function initSearchConsumer() {
+  try {
+    await connectConsumer('search-indexer', ['restaurant_updated', 'menu_updated'], async (topic, message) => {
+      const data = JSON.parse(message.value.toString());
+      const index = topic === 'restaurant_updated' ? INDICES.RESTAURANTS : INDICES.MENU;
+
+      await esClient.index({
+        index,
+        id: data.id,
+        document: data,
+        refresh: true,
+      });
+      logger.info(`ES: Indexed ${index} document`, { id: data.id });
+    });
+    logger.info('🔍 Kafka search indexer listening for catalog updates');
+  } catch (err) {
+    logger.warn('Kafka consumer unavailable, search will use existing ES data', { error: err.message });
+  }
+}
 
 const PORT = process.env.PORT || 3008;
-app.listen(PORT, () => logger.info(`🔍 Search Service on port ${PORT}`));
+app.listen(PORT, async () => {
+  logger.info(`🔍 Search Service on port ${PORT} (Elasticsearch: ${ES_URL})`);
+  await initSearchConsumer();
+});

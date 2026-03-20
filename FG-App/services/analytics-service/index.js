@@ -1,111 +1,180 @@
 /**
- * Analytics Service — Business intelligence, ML hooks, aggregations
+ * Analytics Service — Real PostgreSQL aggregations + Redis surge cache
  * Port: 3009
  */
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
-const { EventEmitter } = require('events');
+const rateLimit = require('express-rate-limit');
 const { createLogger } = require('../../shared/utils/logger.js');
+const { query } = require('../../shared/utils/db.js');
+const { redis } = require('../../shared/utils/redis.js');
+const { connectConsumer } = require('../../shared/utils/kafka.js');
 
 const logger = createLogger('analytics-service');
 const app = express();
-app.use(cors()); app.use(express.json());
+app.use(cors({ origin: process.env.ALLOWED_ORIGINS?.split(',') || false }));
+app.use(express.json());
 
-// ── Event ingestion (Kafka consumer in production) ─────────────────────────
-const eventBus = new EventEmitter();
-const events = [];   // event log
-const stats = {
-  ordersToday: 24, ordersWeek: 128, ordersMonth: 512,
-  revenueToday: 12480, revenueWeek: 68200, revenueMonth: 280000,
-  avgDeliveryTimeMin: 32, avgRating: 4.4,
-  topRestaurants: ['Barbeque Nation', 'Biryani Blues', 'Pizza Hut'],
-  topDishes: ['Chicken Biryani', 'Margherita Pizza', 'McAloo Tikki'],
-  surgePeriods: ['12:00-14:00', '19:00-22:00'],
-};
+const analyticsLimiter = rateLimit({
+  windowMs: 60 * 1000, max: 30,
+  standardHeaders: true, legacyHeaders: false,
+});
+app.use('/api/analytics', analyticsLimiter);
 
-// ── Endpoints ──────────────────────────────────────────────────────────────
+// ── Dashboard — Real DB aggregations ───────────────────────────────────────
+app.get('/api/analytics/dashboard', async (req, res) => {
+  const { restaurantId } = req.query;
+  const cacheKey = `analytics:dashboard:${restaurantId || 'all'}`;
 
-// POST /api/analytics/events — Ingest event
-app.post('/api/analytics/events', (req, res) => {
-  const event = { ...req.body, receivedAt: new Date().toISOString() };
-  events.push(event);
-  if (events.length > 1000) events.splice(0, 100); // keep last 1000
-  eventBus.emit('event', event);
+  try {
+    const cached = await redis.get(cacheKey);
+    if (cached) return res.json(JSON.parse(cached));
 
-  // Update stats based on event type
-  if (event.type === 'order_delivered') {
-    stats.ordersToday++;
-    stats.revenueToday += event.total || 0;
+    const filter = restaurantId ? `WHERE restaurant_id = $1` : '';
+    const params = restaurantId ? [restaurantId] : [];
+
+    const [orderStats, revenueStats, topRestaurants, topDishes, realtimeOrders] = await Promise.all([
+      query(`
+        SELECT
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day')  AS orders_today,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days') AS orders_week,
+          COUNT(*) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days') AS orders_month,
+          AVG(EXTRACT(EPOCH FROM (delivered_at - created_at))/60) FILTER (WHERE status='delivered') AS avg_delivery_min
+        FROM orders ${filter}
+      `, params),
+
+      query(`
+        SELECT
+          COALESCE(SUM(total) FILTER (WHERE created_at >= NOW() - INTERVAL '1 day'), 0)  AS revenue_today,
+          COALESCE(SUM(total) FILTER (WHERE created_at >= NOW() - INTERVAL '7 days'), 0) AS revenue_week,
+          COALESCE(SUM(total) FILTER (WHERE created_at >= NOW() - INTERVAL '30 days'), 0) AS revenue_month
+        FROM orders WHERE status = 'delivered' ${restaurantId ? 'AND restaurant_id = $1' : ''}
+      `, params),
+
+      query(`
+        SELECT r.name, COUNT(o.id) AS order_count
+        FROM orders o JOIN restaurants r ON o.restaurant_id = r.id
+        WHERE o.created_at >= NOW() - INTERVAL '7 days' AND o.status = 'delivered'
+        GROUP BY r.name ORDER BY order_count DESC LIMIT 5
+      `),
+
+      query(`
+        SELECT mi.name, COUNT(oi.id) AS order_count
+        FROM order_items oi JOIN menu_items mi ON oi.menu_item_id = mi.id
+        JOIN orders o ON oi.order_id = o.id
+        WHERE o.created_at >= NOW() - INTERVAL '7 days'
+        GROUP BY mi.name ORDER BY order_count DESC LIMIT 5
+      `),
+
+      query(`SELECT COUNT(*) AS count FROM orders WHERE status IN ('pending','confirmed','preparing','out_for_delivery')`),
+    ]);
+
+    const stats = {
+      ordersToday:    parseInt(orderStats.rows[0].orders_today),
+      ordersWeek:     parseInt(orderStats.rows[0].orders_week),
+      ordersMonth:    parseInt(orderStats.rows[0].orders_month),
+      avgDeliveryMin: Math.round(parseFloat(orderStats.rows[0].avg_delivery_min) || 32),
+      revenueToday:   parseFloat(revenueStats.rows[0].revenue_today),
+      revenueWeek:    parseFloat(revenueStats.rows[0].revenue_week),
+      revenueMonth:   parseFloat(revenueStats.rows[0].revenue_month),
+      topRestaurants: topRestaurants.rows.map(r => r.name),
+      topDishes:      topDishes.rows.map(d => d.name),
+      realtimeOrders: parseInt(realtimeOrders.rows[0].count),
+      restaurantId:   restaurantId || 'all',
+      timestamp:      new Date().toISOString(),
+    };
+
+    await redis.set(cacheKey, JSON.stringify(stats), 'EX', 60); // 1 min cache
+    res.json(stats);
+  } catch (err) {
+    logger.error('Dashboard query failed:', err.message);
+    res.status(500).json({ error: 'Analytics unavailable' });
   }
+});
 
+// ── Heatmap — Real order location density ──────────────────────────────────
+app.get('/api/analytics/heatmap', async (req, res) => {
+  try {
+    const cached = await redis.get('analytics:heatmap');
+    if (cached) return res.json(JSON.parse(cached));
+
+    const result = await query(`
+      SELECT
+        ST_Y(r.location::geometry) AS lat,
+        ST_X(r.location::geometry) AS lng,
+        COUNT(o.id) AS order_count
+      FROM orders o
+      JOIN restaurants r ON o.restaurant_id = r.id
+      WHERE o.created_at >= NOW() - INTERVAL '3 hours'
+      GROUP BY r.id, r.location
+    `);
+
+    const heatmap = result.rows.map(row => ({
+      lat: parseFloat(row.lat),
+      lng: parseFloat(row.lng),
+      orderCount: parseInt(row.order_count),
+      intensity: Math.min(1, parseInt(row.order_count) / 30),
+    }));
+
+    const payload = { heatmap, updatedAt: new Date().toISOString() };
+    await redis.set('analytics:heatmap', JSON.stringify(payload), 'EX', 120);
+    res.json(payload);
+  } catch (err) {
+    logger.error('Heatmap failed:', err.message);
+    res.status(500).json({ error: 'Heatmap unavailable' });
+  }
+});
+
+// ── Surge — Read live value calculated by surgeWorker.js ──────────────────
+app.get('/api/analytics/surge', async (req, res) => {
+  try {
+    const raw = await redis.get('surge_pricing');
+    const surge = raw ? JSON.parse(raw) : { multiplier: 1.0, reason: 'normal', activeOrders: 0, activeRiders: 0 };
+    res.json({ ...surge, restaurantId: req.query.restaurantId || 'all' });
+  } catch (err) {
+    res.json({ multiplier: 1.0, reason: 'normal' });
+  }
+});
+
+// ── Event ingestion (for Kafka-sourced events) ─────────────────────────────
+app.post('/api/analytics/events', async (req, res) => {
+  const { type, total, restaurantId } = req.body;
+  logger.info('Analytics event received', { type, restaurantId });
+
+  // Invalidate dashboard cache on new delivery
+  if (type === 'order_delivered') {
+    await redis.del(`analytics:dashboard:${restaurantId || 'all'}`);
+    await redis.del('analytics:dashboard:all');
+  }
   res.json({ success: true });
 });
 
-// GET /api/analytics/dashboard — Overall stats
-app.get('/api/analytics/dashboard', (req, res) => {
-  const { restaurantId } = req.query;
-  res.json({
-    ...stats,
-    restaurantId: restaurantId || 'all',
-    timestamp: new Date().toISOString(),
-    realtimeOrders: Math.floor(Math.random() * 8) + 2, // simulated live count
-  });
+app.get('/api/analytics/health', async (_, res) => {
+  try {
+    await query('SELECT 1');
+    res.json({ service: 'analytics-service', status: 'ok', source: 'postgresql' });
+  } catch (err) {
+    res.status(500).json({ service: 'analytics-service', status: 'error' });
+  }
 });
 
-// GET /api/analytics/heatmap — Demand heatmap for surge pricing
-app.get('/api/analytics/heatmap', (req, res) => {
-  const BASE = { lat: 28.6273, lng: 77.3660 };
-  const heatmap = Array.from({ length: 25 }, (_, i) => ({
-    lat: BASE.lat + (Math.random() - 0.5) * 0.06,
-    lng: BASE.lng + (Math.random() - 0.5) * 0.06,
-    intensity: Math.random(),
-    orderCount: Math.floor(Math.random() * 50),
-  }));
-  res.json({ heatmap, updatedAt: new Date().toISOString() });
-});
-
-// GET /api/analytics/surge — ML surge prediction
-app.get('/api/analytics/surge', (req, res) => {
-  const { restaurantId } = req.query;
-  const hour = new Date().getHours();
-  const isPeak = (hour >= 12 && hour <= 14) || (hour >= 19 && hour <= 22);
-  const demand = 0.4 + Math.random() * 0.6;
-  const multiplier = Math.min(1.5, 1 + (isPeak ? 0.2 : 0) + (demand > 0.7 ? 0.15 : 0));
-
-  res.json({
-    restaurantId,
-    multiplier: Math.round(multiplier * 100) / 100,
-    reason: isPeak ? 'peak_hour' : demand > 0.7 ? 'high_demand' : 'normal',
-    isPeakHour: isPeak,
-    demandScore: Math.round(demand * 100) / 100,
-    expiresIn: 60,
-  });
-});
-
-// GET /api/analytics/restaurant/:id/revenue
-app.get('/api/analytics/restaurant/:id/revenue', (req, res) => {
-  // In prod: query PostgreSQL with time range
-  const revenue = Array.from({ length: 7 }, (_, i) => ({
-    date: new Date(Date.now() - i * 86400000).toLocaleDateString('en-IN'),
-    revenue: Math.floor(8000 + Math.random() * 6000),
-    orders: Math.floor(18 + Math.random() * 12),
-  })).reverse();
-  res.json({ restaurantId: req.params.id, revenue });
-});
-
-// GET /api/analytics/recommendations/:userId
-app.get('/api/analytics/recommendations/:userId', (req, res) => {
-  // In prod: ML model (collaborative filtering / matrix factorization)
-  res.json({
-    userId: req.params.userId,
-    restaurants: ['r1', 'r5', 'r2'],  // based on order history
-    dishes: ['Chicken Biryani', 'Margherita Pizza'],
-    reason: 'Based on your recent orders',
-  });
-});
-
-app.get('/api/analytics/health', (_, res) => res.json({ service: 'analytics-service', status: 'ok', eventsIngested: events.length }));
+// ── Kafka: listen for order events to invalidate cache ─────────────────────
+async function initAnalyticsConsumer() {
+  try {
+    await connectConsumer('analytics-worker', ['order_delivered', 'order_placed'], async (topic, message) => {
+      const data = JSON.parse(message.value.toString());
+      await redis.del(`analytics:dashboard:${data.restaurantId || 'all'}`);
+      await redis.del('analytics:dashboard:all');
+      logger.info('Analytics cache invalidated on order event', { topic, orderId: data.orderId });
+    });
+  } catch (err) {
+    logger.warn('Analytics Kafka consumer unavailable', { error: err.message });
+  }
+}
 
 const PORT = process.env.PORT || 3009;
-app.listen(PORT, () => logger.info(`📊 Analytics Service on port ${PORT}`));
+app.listen(PORT, async () => {
+  logger.info(`📊 Analytics Service on port ${PORT} (PostgreSQL-backed)`);
+  await initAnalyticsConsumer();
+});
